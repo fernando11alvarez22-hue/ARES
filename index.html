@@ -29,9 +29,11 @@ canvas{width:100%;height:100%;display:block}
 .m{max-width:86%;padding:10px 13px;border-radius:14px;font-size:15px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word}
 .m.u{align-self:flex-end;background:#3a0a18;border:1px solid var(--crim)}
 .m.a{align-self:flex-start;background:#14000a;border:1px solid var(--dim);box-shadow:0 0 14px #ff1e3c18}
-#set{padding:16px;display:flex;flex-direction:column;gap:18px;font-size:15px}
+#set{padding:16px;display:flex;flex-direction:column;gap:18px;font-size:15px;overflow-y:auto}
 #set label{display:flex;justify-content:space-between;align-items:center;gap:12px}
 #set input[type=range]{flex:1;accent-color:#ff1e3c}
+.fld{background:#10000799;border:1px solid var(--crim);border-radius:12px;color:var(--txt);padding:11px 12px;font-size:16px;width:100%;outline:none}
+select.fld{appearance:auto}
 #toast{position:absolute;top:60px;left:50%;transform:translateX(-50%);background:#2a0010;border:1px solid var(--red);padding:8px 14px;border-radius:10px;font-size:13px;z-index:9;display:none;max-width:90%;text-align:center}
 </style></head><body>
 <div id="app">
@@ -50,12 +52,19 @@ canvas{width:100%;height:100%;display:block}
 <div class="sheet" id="chat"><div class="sh"><span>HISTORIAL</span><button class="ib" data-close="chat">&#10005;</button></div><div id="msgs"></div></div>
 <div class="sheet" id="settings"><div class="sh"><span>AJUSTES</span><button class="ib" data-close="settings">&#10005;</button></div>
 <div id="set">
+<div>
+<div style="margin-bottom:8px">Clave de Gemini <span id="keyState" style="font-size:12px;color:#ff8093"></span></div>
+<input class="fld" id="cKey" type="password" placeholder="Pega aquí tu clave" autocomplete="off">
+<button class="chip" id="bKey" style="padding:12px;margin-top:10px;width:100%">Guardar clave y buscar modelos</button>
+<div style="margin:12px 0 8px">Modelo</div>
+<select class="fld" id="cModel"></select>
+</div>
 <label>Respuestas habladas <input type="checkbox" id="cVoice"></label>
 <label>Velocidad <input type="range" id="cRate" min="0.6" max="1.6" step="0.1"></label>
 <label>Volumen <input type="range" id="cVol" min="0" max="1" step="0.1"></label>
 <label>Brillo del núcleo <input type="range" id="cGlow" min="0.5" max="1.5" step="0.1"></label>
 <button class="chip" id="bClear" style="padding:12px">Borrar historial</button>
-<div style="font-size:12px;color:#ff8093;line-height:1.5">A.R.E.S. v0.1 · La palabra de activación «Ares» aún no está implementada: el navegador no permite escuchar en segundo plano.</div>
+<div style="font-size:12px;color:#ff8093;line-height:1.5">A.R.E.S. v0.2 · La clave se guarda solo en este teléfono. La palabra de activación «Ares» aún no está implementada: el navegador no permite escuchar en segundo plano.</div>
 </div></div>
 <div id="toast"></div>
 </div>
@@ -63,12 +72,14 @@ canvas{width:100%;height:100%;display:block}
 (function(){
 "use strict";
 var $=function(s){return document.querySelector(s)};
-var cfg={voice:true,rate:1,vol:1,glow:1}, msgs=[], state="idle", sample=null, rec=null, busy=false, pulseAmp=0;
+var API="https://generativelanguage.googleapis.com/v1beta/";
+var cfg={voice:true,rate:1,vol:1,glow:1,model:""}, msgs=[], state="idle", rec=null, busy=false, pulseAmp=0;
 var PERSONA="Eres A.R.E.S., el asistente personal del usuario. Eres inteligente, leal, directo y resolutivo. Hablas en español natural, con personalidad propia y sin formalidad excesiva. Respondes claro y breve (esto se leerá en un móvil y quizá se dirá en voz alta: evita markdown, listas largas y emojis). Si no sabes algo, lo reconoces. Ayudas con tareas, ideas, explicaciones y organización.";
 var CHIPS=[["Planificar mi día","Ayúdame a planificar mi día: hazme 3 preguntas cortas para empezar."],["Dame una idea","Dame una idea original para un proyecto que pueda hacer este fin de semana."],["Explícame algo","Explícame de forma sencilla algo interesante que casi nadie sabe."],["Organizar tareas","Quiero organizar mis tareas pendientes. Dime cómo empezamos."]];
-function toast(t){var e=$("#toast");e.textContent=t;e.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(function(){e.style.display="none"},3500)}
+function toast(t){var e=$("#toast");e.textContent=t;e.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(function(){e.style.display="none"},4500)}
 function store(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 function fetchStore(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
+function getKey(){return fetchStore("ares_key","")}
 cfg=Object.assign(cfg,fetchStore("ares_cfg",{})); msgs=fetchStore("ares_msgs",[]);
 var LABEL={idle:"en reposo",listening:"escuchando",thinking:"procesando",speaking:"respondiendo"};
 function setState(s){state=s;$("#status").textContent=LABEL[s];$("#bMic").classList.toggle("on",s==="listening")}
@@ -76,29 +87,47 @@ function addBubble(role,text){var d=document.createElement("div");d.className="m
 function caption(t){var c=$("#caption");c.style.display=t?"block":"none";c.textContent=t||"";c.scrollTop=1e9}
 msgs.forEach(function(m){addBubble(m.role,m.content)});
 if(msgs.length){var l=msgs[msgs.length-1];if(l.role==="assistant")caption(l.content)}
-// ---------- IA real (Claude vía capacidad "sample") ----------
-if(window.claude&&window.claude.use){window.claude.use("sample").then(function(s){sample=s;if(!s)toast("IA no disponible: abre A.R.E.S. desde su enlace en claude.ai")}).catch(function(){})}
-else toast("IA no disponible fuera de claude.ai")
+// ---------- IA real: Gemini ----------
+function fillModels(list){
+ var s=$("#cModel");s.innerHTML="";
+ list.forEach(function(n){var o=document.createElement("option");o.value=n;o.textContent=n;s.appendChild(o)});
+ if(cfg.model&&list.indexOf(cfg.model)>-1)s.value=cfg.model;else if(list.length){cfg.model=s.value=list[0]}
+ store("ares_cfg",cfg)
+}
+function refreshKeyState(){$("#keyState").textContent=getKey()?"· guardada ✓":"· sin clave"}
+function loadModels(){
+ var k=getKey();if(!k){toast("Primero pega tu clave");return}
+ toast("Buscando modelos…");
+ fetch(API+"models?pageSize=100",{headers:{"x-goog-api-key":k}}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error((j.error&&j.error.message)||("Error "+r.status));return j})}).then(function(j){
+  var names=(j.models||[]).filter(function(m){return(m.supportedGenerationMethods||[]).indexOf("generateContent")>-1&&/flash/i.test(m.name)&&!/image|tts|live|audio|robotics|embed/i.test(m.name)}).map(function(m){return m.name.replace("models/","")});
+  names.sort(function(a,b){return(/lite/i.test(b)?1:0)-(/lite/i.test(a)?1:0)});
+  if(!names.length){toast("No encontré modelos Flash para tu clave");return}
+  fillModels(names);toast(names.length+" modelos encontrados. Elegido: "+cfg.model)
+ }).catch(function(e){toast("No pude comprobar la clave: "+e.message)})
+}
 function send(text){
- text=(text||"").trim(); if(!text||busy)return;
- if(!sample){toast("La IA aún no está disponible. Espera un momento o abre el enlace desde claude.ai");return}
- stopSpeak(); if(rec)rec.abort();
+ text=(text||"").trim();if(!text||busy)return;
+ var key=getKey();
+ if(!key||!cfg.model){toast("Abre Ajustes, pega tu clave y pulsa «Guardar clave y buscar modelos»");$("#settings").classList.add("open");return}
+ stopSpeak();if(rec)rec.abort();
  busy=true;$("#inp").value="";
  msgs.push({role:"user",content:text});addBubble("user",text);caption("");setState("thinking");
- var hist=msgs.slice(-14).map(function(m){return{role:m.role,content:m.content}});
- hist[0]={role:"user",content:PERSONA+"\n\n---\n"+(hist[0].role==="user"?hist[0].content:"Hola")};
- if(hist[0].role!=="user")hist.shift();
+ var hist=msgs.slice(-14).map(function(m){return{role:m.role==="user"?"user":"model",parts:[{text:m.content}]}});
+ while(hist.length&&hist[0].role!=="user")hist.shift();
  var b=addBubble("assistant","…");
- sample(hist,{cache:false,onText:function(o){b.textContent=o.text;caption(o.text);$("#msgs").scrollTop=1e9}}).then(function(r){
-  var t=(r&&r.text)||"";b.textContent=t;caption(t);msgs.push({role:"assistant",content:t});store("ares_msgs",msgs.slice(-60));
-  busy=false;speak(t)
+ fetch(API+"models/"+cfg.model+":generateContent",{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":key},body:JSON.stringify({systemInstruction:{parts:[{text:PERSONA}]},contents:hist})}).then(function(r){return r.json().then(function(j){if(!r.ok){var e=new Error((j.error&&j.error.message)||"error");e.status=r.status;throw e}return j})}).then(function(j){
+  var parts=(j.candidates&&j.candidates[0]&&j.candidates[0].content&&j.candidates[0].content.parts)||[];
+  var t=parts.filter(function(p){return!p.thought}).map(function(p){return p.text||""}).join("").trim();
+  if(!t)throw new Error("Respuesta vacía");
+  b.textContent=t;caption(t);msgs.push({role:"assistant",content:t});store("ares_msgs",msgs.slice(-60));busy=false;speak(t)
  }).catch(function(e){
-  busy=false;setState("idle");msgs.pop();b.textContent="No pude responder ("+((e&&e.code)||"error")+"). Inténtalo de nuevo.";
-  toast(e&&e.code==="not_granted"?"Debes aceptar el permiso de la IA":"Error al contactar con la IA")
+  busy=false;setState("idle");msgs.pop();
+  var m=e.status===429?"Límite gratuito alcanzado. Espera un minuto.":(e.status===400||e.status===403)?"La clave no es válida o no tiene permiso.":e.status===404?"Ese modelo no está disponible. Elige otro en Ajustes.":"No pude responder: "+e.message;
+  b.textContent=m;toast(m)
  })
 }
 // ---------- Voz: síntesis ----------
-function pickVoice(){var v=speechSynthesis.getVoices();return v.filter(function(x){return /^es/i.test(x.lang)})[0]||null}
+function pickVoice(){var v=speechSynthesis.getVoices();return v.filter(function(x){return/^es/i.test(x.lang)})[0]||null}
 function speak(t){
  if(!cfg.voice||!window.speechSynthesis||!t){setState("idle");return}
  var u=new SpeechSynthesisUtterance(t);u.lang="es-ES";u.rate=cfg.rate;u.volume=cfg.vol;var v=pickVoice();if(v)u.voice=v;
@@ -112,7 +141,7 @@ var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 function toggleMic(){
  if(rec){rec.stop();return}
  if(!SR){toast("Este navegador no soporta reconocimiento de voz. Prueba con Chrome.");return}
- if(busy)return; stopSpeak();
+ if(busy)return;stopSpeak();
  var r=new SR(),got="";r.lang="es-ES";r.interimResults=true;r.continuous=false;rec=r;
  r.onstart=function(){setState("listening")};
  r.onresult=function(e){var s="";for(var i=0;i<e.results.length;i++)s+=e.results[i][0].transcript;got=s;$("#inp").value=s};
@@ -129,6 +158,9 @@ $("#bChat").onclick=function(){$("#chat").classList.add("open");$("#msgs").scrol
 $("#bSet").onclick=function(){$("#settings").classList.add("open")};
 document.querySelectorAll("[data-close]").forEach(function(b){b.onclick=function(){$("#"+b.dataset.close).classList.remove("open")}});
 $("#cVoice").checked=cfg.voice;$("#cRate").value=cfg.rate;$("#cVol").value=cfg.vol;$("#cGlow").value=cfg.glow;
+fillModels(cfg.model?[cfg.model]:[]);refreshKeyState();
+$("#cModel").onchange=function(){cfg.model=this.value;store("ares_cfg",cfg)};
+$("#bKey").onclick=function(){var v=$("#cKey").value.trim();if(v){store("ares_key",v);$("#cKey").value=""}refreshKeyState();loadModels()};
 function bind(id,key,num){$(id).oninput=function(){cfg[key]=num?parseFloat(this.value):this.checked;if(key==="voice"&&!cfg.voice)stopSpeak();store("ares_cfg",cfg)}}
 bind("#cVoice","voice",false);bind("#cRate","rate",true);bind("#cVol","vol",true);bind("#cGlow","glow",true);
 $("#bClear").onclick=function(){msgs=[];store("ares_msgs",[]);$("#msgs").innerHTML="";caption("");toast("Historial borrado")};
@@ -149,22 +181,16 @@ function draw(ts){
  var gr=ctx.createRadialGradient(cx,cy,0,cx,cy,R*1.1);gr.addColorStop(0,rgba(.35*en));gr.addColorStop(.5,rgba(.1*en));gr.addColorStop(1,"rgba(0,0,0,0)");
  ctx.fillStyle=gr;ctx.fillRect(0,0,W,H);
  ctx.save();ctx.translate(cx,cy);ctx.shadowColor="#ff1e3c";ctx.shadowBlur=14*cfg.glow;
- // marcas exteriores
  ctx.strokeStyle=rgba(.55*en);ctx.lineWidth=1.5;
  for(var k=0;k<72;k++){var a=k/72*6.283+ang*.3,l=k%6===0?.07:.03;ctx.beginPath();ctx.moveTo(Math.cos(a)*R,Math.sin(a)*R);ctx.lineTo(Math.cos(a)*R*(1-l),Math.sin(a)*R*(1-l));ctx.stroke()}
- // anillos concéntricos con arcos y trazos
  var rings=[[.92,[60,18],1,2],[.78,[4,10],-1.6,1.5],[.64,[110,30,10,30],1.2,3],[.5,[2,7],-2.2,1.5],[.38,[40,12],2,2.5]];
  rings.forEach(function(q){ctx.setLineDash(q[1]);ctx.lineWidth=q[3];ctx.strokeStyle=rgba((.5+.4*Math.sin(t+q[0]*5))*en+.1);ctx.save();ctx.rotate(ang*q[2]);ctx.beginPath();ctx.arc(0,0,R*q[0]*(1+pulse*.15),0,6.283);ctx.stroke();ctx.restore()});
  ctx.setLineDash([]);
- // líneas de circuito
  ctx.lineWidth=1.2;ctx.strokeStyle=rgba(.6*en);
  for(var s=0;s<8;s++){ctx.save();ctx.rotate(s*.7854+ang*.15);var r1=R*.2,r2=R*.38,r3=R*.5;ctx.beginPath();ctx.moveTo(r1,0);ctx.lineTo(r2,0);ctx.lineTo(r2+R*.05,R*.05);ctx.lineTo(r3,R*.05);ctx.stroke();var f=(t*.8*cur.spd+s*.13)%1;ctx.fillStyle=rgba(.9);ctx.beginPath();ctx.arc(r1+(r3-r1)*f,0,2,0,6.283);ctx.fill();ctx.restore()}
- // ondas al escuchar
  if(state==="listening")for(var w=0;w<3;w++){var p=(t*.6+w/3)%1;ctx.strokeStyle=rgba((1-p)*.8);ctx.lineWidth=2;ctx.beginPath();ctx.arc(0,0,R*(.2+p*.85),0,6.283);ctx.stroke()}
- // núcleo
  var cr=R*.17*(1+pulse);var cg=ctx.createRadialGradient(0,0,0,0,0,cr*1.6);cg.addColorStop(0,"#fff0f2");cg.addColorStop(.25,"#ff5a70");cg.addColorStop(.6,rgba(.9));cg.addColorStop(1,"rgba(120,0,20,0)");
  ctx.shadowBlur=30*cfg.glow;ctx.fillStyle=cg;ctx.beginPath();ctx.arc(0,0,cr*1.6,0,6.283);ctx.fill();
- // partículas
  ctx.globalCompositeOperation="lighter";ctx.shadowBlur=8;
  P.forEach(function(p){p.a+=dt*p.s*cur.spd*.8;var rr=R*p.r*(1+pulse*.1);ctx.fillStyle=rgba(.35+.5*en);ctx.beginPath();ctx.arc(Math.cos(p.a)*rr,Math.sin(p.a)*rr,p.z,0,6.283);ctx.fill()});
  ctx.restore();requestAnimationFrame(draw)
